@@ -44,7 +44,7 @@ io.on("connection", (socket) => {
     }
 
     socket.join(roomId);
-    rooms[roomId][socket.id] = { move: null };
+    rooms[roomId][socket.id] = { move: null, score: 0 };
 
     console.log(`User ${socket.id} joined ${roomId}`);
     io.to(roomId).emit("playersUpdate", Object.keys(rooms[roomId]));
@@ -69,12 +69,41 @@ io.on("connection", (socket) => {
 
       if (m1 && m2) {
         const result = getResult(m1, m2);
+        let winner = null;
+
+        if (result === 1) {
+          rooms[roomId][p1].score += 1;
+          winner = p1;
+        } else if (result === 2) {
+          rooms[roomId][p2].score += 1;
+          winner = p2;
+        }
+
+        // Emit kết quả vòng đấu
         io.to(roomId).emit("roundResult", {
-          [p1]: m1,
-          [p2]: m2,
-          winner: result === 0 ? null : result === 1 ? p1 : p2,
+          [p1]: { move: m1, score: rooms[roomId][p1].score },
+          [p2]: { move: m2, score: rooms[roomId][p2].score },
+          winner: result === 0 ? null : winner,
         });
 
+        // Kiểm tra nếu có người đạt 3 điểm
+        if (rooms[roomId][p1].score === 3 || rooms[roomId][p2].score === 3) {
+          const gameWinner = rooms[roomId][p1].score === 3 ? p1 : p2;
+
+          io.to(roomId).emit("gameOver", {
+            winner: gameWinner,
+            scores: {
+              [p1]: rooms[roomId][p1].score,
+              [p2]: rooms[roomId][p2].score,
+            },
+          });
+
+          // Reset lại điểm cho lượt chơi tiếp theo
+          rooms[roomId][p1].score = 0;
+          rooms[roomId][p2].score = 0;
+        }
+
+        // Reset nước đi
         rooms[roomId][p1].move = null;
         rooms[roomId][p2].move = null;
       }
