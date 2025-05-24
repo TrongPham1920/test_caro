@@ -8,18 +8,19 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: "*",
+    origin: "*", // Cho phép mọi nguồn, bạn có thể chỉ định cụ thể nếu cần
     methods: ["GET", "POST"],
   },
 });
 
 app.use(cors());
 
+// Route test
 app.get("/", (req, res) => {
-  res.send("Socket.io Ba Cây server is running");
+  res.send("Socket.io server is running");
 });
 
-const rooms = {}; // roomId -> { socketId: { cards, score } }
+const rooms = {}; // roomId -> { socketId: { move: null } }
 
 function findAvailableRoom() {
   for (const roomId in rooms) {
@@ -32,53 +33,6 @@ function findAvailableRoom() {
 
 let roomCounter = 1;
 
-// Bộ bài
-const SUITS = ["♠", "♥", "♦", "♣"];
-const VALUES = [
-  "A",
-  "2",
-  "3",
-  "4",
-  "5",
-  "6",
-  "7",
-  "8",
-  "9",
-  "10",
-  "J",
-  "Q",
-  "K",
-];
-
-function getRandomCard() {
-  const suit = SUITS[Math.floor(Math.random() * SUITS.length)];
-  const value = VALUES[Math.floor(Math.random() * VALUES.length)];
-  return { suit, value };
-}
-
-function getCardPoint(value) {
-  if (value === "A") return 1;
-  if (["J", "Q", "K"].includes(value)) return 10;
-  return parseInt(value);
-}
-
-function drawThreeCards() {
-  const cards = [];
-  while (cards.length < 3) {
-    const card = getRandomCard();
-    // đảm bảo không trùng bài
-    if (!cards.find((c) => c.suit === card.suit && c.value === card.value)) {
-      cards.push(card);
-    }
-  }
-  return cards;
-}
-
-function calculateScore(cards) {
-  const total = cards.reduce((sum, card) => sum + getCardPoint(card.value), 0);
-  return total % 10;
-}
-
 io.on("connection", (socket) => {
   console.log("User connected:", socket.id);
 
@@ -90,7 +44,7 @@ io.on("connection", (socket) => {
     }
 
     socket.join(roomId);
-    rooms[roomId][socket.id] = { cards: null, score: 0 };
+    rooms[roomId][socket.id] = { move: null, score: 0 };
 
     console.log(`User ${socket.id} joined ${roomId}`);
     io.to(roomId).emit("playersUpdate", Object.keys(rooms[roomId]));
@@ -99,42 +53,60 @@ io.on("connection", (socket) => {
       io.to(roomId).emit("startGame");
     }
 
+    // Gửi roomId về client để sau này gửi move
     socket.emit("roomJoined", roomId);
   });
 
-  socket.on("draw", ({ roomId }) => {
+  socket.on("move", ({ roomId, move }) => {
     if (!rooms[roomId]) return;
-
-    const cards = drawThreeCards();
-    const score = calculateScore(cards);
-
-    rooms[roomId][socket.id].cards = cards;
-    rooms[roomId][socket.id].score = score;
+    rooms[roomId][socket.id].move = move;
 
     const players = Object.keys(rooms[roomId]);
-
     if (players.length === 2) {
       const [p1, p2] = players;
+      const m1 = rooms[roomId][p1].move;
+      const m2 = rooms[roomId][p2].move;
 
-      const s1 = rooms[roomId][p1].score;
-      const s2 = rooms[roomId][p2].score;
+      if (m1 && m2) {
+        const result = getResult(m1, m2);
+        let winner = null;
 
-      let winner = null;
-      if (s1 !== s2) {
-        winner = s1 > s2 ? p1 : p2;
+        if (result === 1) {
+          rooms[roomId][p1].score += 1;
+          winner = p1;
+        } else if (result === 2) {
+          rooms[roomId][p2].score += 1;
+          winner = p2;
+        }
+
+        // Emit kết quả vòng đấu
+        io.to(roomId).emit("roundResult", {
+          [p1]: { move: m1, score: rooms[roomId][p1].score },
+          [p2]: { move: m2, score: rooms[roomId][p2].score },
+          winner: result === 0 ? null : winner,
+        });
+
+        // Kiểm tra nếu có người đạt 3 điểm
+        if (rooms[roomId][p1].score === 3 || rooms[roomId][p2].score === 3) {
+          const gameWinner = rooms[roomId][p1].score === 3 ? p1 : p2;
+
+          io.to(roomId).emit("gameOver", {
+            winner: gameWinner,
+            scores: {
+              [p1]: rooms[roomId][p1].score,
+              [p2]: rooms[roomId][p2].score,
+            },
+          });
+
+          // Reset lại điểm cho lượt chơi tiếp theo
+          rooms[roomId][p1].score = 0;
+          rooms[roomId][p2].score = 0;
+        }
+
+        // Reset nước đi
+        rooms[roomId][p1].move = null;
+        rooms[roomId][p2].move = null;
       }
-
-      io.to(roomId).emit("roundResult", {
-        [p1]: { cards: rooms[roomId][p1].cards, score: s1 },
-        [p2]: { cards: rooms[roomId][p2].cards, score: s2 },
-        winner,
-      });
-
-      // Reset cho vòng tiếp theo
-      rooms[roomId][p1].cards = null;
-      rooms[roomId][p2].cards = null;
-      rooms[roomId][p1].score = 0;
-      rooms[roomId][p2].score = 0;
     }
   });
 
@@ -152,7 +124,18 @@ io.on("connection", (socket) => {
   });
 });
 
-const PORT = 5000;
+function getResult(p1, p2) {
+  if (p1 === p2) return 0;
+  if (
+    (p1 === "rock" && p2 === "scissors") ||
+    (p1 === "scissors" && p2 === "paper") ||
+    (p1 === "paper" && p2 === "rock")
+  )
+    return 1;
+  return 2;
+}
+
+const PORT = 3000;
 server.listen(PORT, () => {
-  console.log(`🚀 Ba Cây server running on http://localhost:${PORT}`);
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
 });
